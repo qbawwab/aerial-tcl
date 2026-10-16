@@ -5,6 +5,9 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.util.Log;
+import android.os.Build;
+import android.os.Environment;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,6 +21,17 @@ final class VideoLibrary {
 
     static List<Uri> read(Context context) {
         LinkedHashSet<Uri> found = new LinkedHashSet<>();
+        String usbPath = Config.prefs(context).getString("usb_path", "");
+        if (!usbPath.isEmpty() && (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager())) {
+            try {
+                File directory = new File(usbPath).getCanonicalFile();
+                if (directory.isDirectory() && directory.canRead()) {
+                    scanFiles(directory, found, 0);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "USB path not readable", e);
+            }
+        }
         String raw = Config.prefs(context).getString(Config.TREE, "");
         if (!raw.isEmpty()) {
             try {
@@ -30,6 +44,20 @@ final class VideoLibrary {
         }
         found.addAll(Config.selectedVideos(context));
         return new ArrayList<>(found);
+    }
+
+    private static void scanFiles(File directory, LinkedHashSet<Uri> found, int depth) {
+        if (depth > 8 || found.size() >= MAX_VIDEOS) return;
+        File[] files = directory.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (found.size() >= MAX_VIDEOS) return;
+            if (file.isDirectory()) {
+                scanFiles(file, found, depth + 1);
+            } else if (file.isFile() && isVideo(file.getName(), null)) {
+                found.add(Uri.fromFile(file));
+            }
+        }
     }
 
     private static void walk(Context context, Uri tree, String parentId,
