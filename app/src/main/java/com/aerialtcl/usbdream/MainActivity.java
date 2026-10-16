@@ -8,6 +8,14 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
+import android.os.Environment;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
+import android.provider.Settings;
+import android.content.ActivityNotFoundException;
+import java.io.File;
+import java.util.Collections;
 import android.provider.DocumentsContract;
 import android.view.Gravity;
 import android.view.View;
@@ -24,6 +32,7 @@ import java.util.List;
 /** Remote-control-friendly setup screen. No internet, ads or accounts. */
 public final class MainActivity extends Activity {
     private static final int PICK_FOLDER = 101;
+    private static final int STORAGE_SETTINGS = 103;
     private static final int PICK_VIDEOS = 102;
     private static final int BG = 0xff0b1019;
     private static final int CARD = 0xff18212e;
@@ -70,13 +79,13 @@ public final class MainActivity extends Activity {
         panel.addView(sourceStatus);
         updateSourceStatus();
         space(panel, 16);
-        Button folder = action("CHOOSE USB VIDEO FOLDER", () -> chooseFolder());
+        Button folder = action("USE MY USB DRIVE (NO PICKER)", () -> selectUsbDrive());
         panel.addView(folder);
         space(panel, 9);
-        Button files = action("OR CHOOSE INDIVIDUAL VIDEO FILES", () -> chooseVideos());
+        Button files = action("ALTERNATIVE: ANDROID FILE PICKER", () -> chooseFolder());
         panel.addView(files);
         space(panel, 11);
-        panel.addView(label("Use the USB folder picker for easy updates. Files you add later will be picked up the next time the screensaver starts.", 14, MUTED));
+        panel.addView(label("Put MP4 videos in an AerialVideos folder on your USB. Grant all-files access if requested, then choose the USB above. The app scans the folder whenever playback starts.", 14, MUTED));
         space(body, 22);
 
         LinearLayout prefsPanel = new LinearLayout(this);
@@ -98,6 +107,40 @@ public final class MainActivity extends Activity {
         space(body, 17);
         body.addView(label("After testing: set Aerial TCL as the default screensaver using ADB (instructions in the included README).", 14, MUTED));
         setContentView(scroll);
+    }
+
+    private void selectUsbDrive() {
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+            Toast.makeText(this, "Allow Aerial TCL to manage all files, then return and press the USB button again.", Toast.LENGTH_LONG).show();
+            try {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, STORAGE_SETTINGS);
+            } catch (ActivityNotFoundException e) {
+                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+            }
+            return;
+        }
+        StorageManager manager = (StorageManager) getSystemService(STORAGE_SERVICE);
+        if (manager == null) {
+            Toast.makeText(this, "USB storage service unavailable", Toast.LENGTH_LONG).show();
+            return;
+        }
+        List<StorageVolume> volumes = manager.getStorageVolumes();
+        for (StorageVolume volume : volumes) {
+            if (!volume.isRemovable() || !volume.getState().equals(Environment.MEDIA_MOUNTED)) continue;
+            File root = null;
+            if (Build.VERSION.SDK_INT >= 30) root = volume.getDirectory();
+            if (root == null) continue;
+            File preferred = new File(root, "AerialVideos");
+            File chosen = preferred.isDirectory() ? preferred : root;
+            if (!chosen.canRead()) continue;
+            Config.prefs(this).edit().putString("usb_path", chosen.getAbsolutePath()).apply();
+            updateSourceStatus();
+            Toast.makeText(this, "Using USB: " + chosen.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "No readable USB drive found. Reinsert your USB and retry.", Toast.LENGTH_LONG).show();
     }
 
     private void chooseFolder() {
@@ -173,6 +216,11 @@ public final class MainActivity extends Activity {
 
     private void updateSourceStatus() {
         if (sourceStatus == null) return;
+        String usbPath = Config.prefs(this).getString("usb_path", "");
+        if (!usbPath.isEmpty()) {
+            sourceStatus.setText("USB: " + usbPath);
+            return;
+        }
         String folder = Config.prefs(this).getString(Config.TREE_NAME, "");
         List<Uri> videos = Config.selectedVideos(this);
         if (folder.isEmpty() && videos.isEmpty()) {
