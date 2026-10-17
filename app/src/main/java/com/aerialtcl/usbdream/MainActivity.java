@@ -1,6 +1,8 @@
 package com.aerialtcl.usbdream;
 
 import android.app.Activity;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Color;
@@ -33,6 +35,7 @@ import java.util.List;
 public final class MainActivity extends Activity {
     private static final int PICK_FOLDER = 101;
     private static final int STORAGE_SETTINGS = 103;
+    private static final int VIDEO_PERMISSION = 104;
     private static final int PICK_VIDEOS = 102;
     private static final int BG = 0xff0b1019;
     private static final int CARD = 0xff18212e;
@@ -79,13 +82,13 @@ public final class MainActivity extends Activity {
         panel.addView(sourceStatus);
         updateSourceStatus();
         space(panel, 16);
-        Button folder = action("USE MY USB DRIVE (NO PICKER)", () -> selectUsbDrive());
+        Button folder = action("FIND USB VIDEOS (NO PICKER)", () -> selectUsbDrive());
         panel.addView(folder);
         space(panel, 9);
         Button files = action("ALTERNATIVE: ANDROID FILE PICKER", () -> chooseFolder());
         panel.addView(files);
         space(panel, 11);
-        panel.addView(label("Put MP4 videos in an AerialVideos folder on your USB. Grant all-files access if requested, then choose the USB above. The app scans the folder whenever playback starts.", 14, MUTED));
+        panel.addView(label("Put MP4 videos in an AerialVideos folder on your USB. Grant the normal video/media permission if Android asks. USB videos are detected via Android MediaStore; your TV must index the USB.", 14, MUTED));
         space(body, 22);
 
         LinearLayout prefsPanel = new LinearLayout(this);
@@ -110,37 +113,40 @@ public final class MainActivity extends Activity {
     }
 
     private void selectUsbDrive() {
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            Toast.makeText(this, "Allow Aerial TCL to manage all files, then return and press the USB button again.", Toast.LENGTH_LONG).show();
-            try {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:" + getPackageName()));
-                startActivityForResult(intent, STORAGE_SETTINGS);
-            } catch (ActivityNotFoundException e) {
-                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-            }
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(new String[]{Manifest.permission.READ_MEDIA_VIDEO}, VIDEO_PERMISSION);
             return;
         }
-        StorageManager manager = (StorageManager) getSystemService(STORAGE_SERVICE);
-        if (manager == null) {
-            Toast.makeText(this, "USB storage service unavailable", Toast.LENGTH_LONG).show();
+        if (Build.VERSION.SDK_INT >= 23 &&
+                checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, VIDEO_PERMISSION);
             return;
         }
-        List<StorageVolume> volumes = manager.getStorageVolumes();
-        for (StorageVolume volume : volumes) {
-            if (!volume.isRemovable() || !volume.getState().equals(Environment.MEDIA_MOUNTED)) continue;
-            File root = null;
-            if (Build.VERSION.SDK_INT >= 30) root = volume.getDirectory();
-            if (root == null) continue;
-            File preferred = new File(root, "AerialVideos");
-            File chosen = preferred.isDirectory() ? preferred : root;
-            if (!chosen.canRead()) continue;
-            Config.prefs(this).edit().putString("usb_path", chosen.getAbsolutePath()).apply();
-            updateSourceStatus();
-            Toast.makeText(this, "Using USB: " + chosen.getAbsolutePath(), Toast.LENGTH_LONG).show();
-            return;
+        checkUsbVideos();
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != VIDEO_PERMISSION) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+            checkUsbVideos();
+        } else {
+            Toast.makeText(this, "Video permission denied. Enable Files and media in Android app settings.", Toast.LENGTH_LONG).show();
         }
-        Toast.makeText(this, "No readable USB drive found. Reinsert your USB and retry.", Toast.LENGTH_LONG).show();
+    }
+
+    private void checkUsbVideos() {
+        new Thread(() -> {
+            int count = VideoLibrary.usbVideos(this).size();
+            runOnUiThread(() -> {
+                Config.prefs(this).edit().putBoolean("use_mediastore_usb", true).apply();
+                updateSourceStatus();
+                Toast.makeText(this,
+                        count > 0 ? "Found " + count + " USB videos. Try Preview." :
+                                "No USB videos indexed yet. Check the USB and try again.",
+                        Toast.LENGTH_LONG).show();
+            });
+        }).start();
     }
 
     private void chooseFolder() {
@@ -216,6 +222,10 @@ public final class MainActivity extends Activity {
 
     private void updateSourceStatus() {
         if (sourceStatus == null) return;
+        if (Config.prefs(this).getBoolean("use_mediastore_usb", false)) {
+            sourceStatus.setText("USB media library selected. Use Preview to test playback.");
+            return;
+        }
         String usbPath = Config.prefs(this).getString("usb_path", "");
         if (!usbPath.isEmpty()) {
             sourceStatus.setText("USB: " + usbPath);
