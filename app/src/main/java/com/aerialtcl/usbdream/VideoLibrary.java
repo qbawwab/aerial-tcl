@@ -1,6 +1,12 @@
 package com.aerialtcl.usbdream;
 
 import android.content.Context;
+import android.content.ContentUris;
+import android.content.pm.PackageManager;
+import android.Manifest;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
+import android.provider.MediaStore;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
@@ -21,6 +27,10 @@ final class VideoLibrary {
 
     static List<Uri> read(Context context) {
         LinkedHashSet<Uri> found = new LinkedHashSet<>();
+        if (Config.prefs(context).getBoolean("use_mediastore_usb", false)) {
+            found.addAll(usbVideos(context));
+            return new ArrayList<>(found);
+        }
         String usbPath = Config.prefs(context).getString("usb_path", "");
         if (!usbPath.isEmpty() && (Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager())) {
             try {
@@ -44,6 +54,50 @@ final class VideoLibrary {
         }
         found.addAll(Config.selectedVideos(context));
         return new ArrayList<>(found);
+    }
+
+    /** Query indexed video media specifically on mounted removable USB volumes. */
+    static List<Uri> usbVideos(Context context) {
+        LinkedHashSet<Uri> output = new LinkedHashSet<>();
+        if (Build.VERSION.SDK_INT >= 23) {
+            String permission = Build.VERSION.SDK_INT >= 33
+                    ? Manifest.permission.READ_MEDIA_VIDEO : Manifest.permission.READ_EXTERNAL_STORAGE;
+            if (context.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                return new ArrayList<>();
+            }
+        }
+        if (Build.VERSION.SDK_INT < 29) return new ArrayList<>();
+        StorageManager manager = (StorageManager) context.getSystemService(Context.STORAGE_SERVICE);
+        if (manager == null) return new ArrayList<>();
+        for (StorageVolume volume : manager.getStorageVolumes()) {
+            if (!volume.isRemovable() || !Environment.MEDIA_MOUNTED.equals(volume.getState())) continue;
+            String name = volume.getMediaStoreVolumeName();
+            if (name == null || name.isEmpty()) continue;
+            Uri collection = MediaStore.Video.Media.getContentUri(name);
+            String[] projection = {MediaStore.Video.Media._ID,
+                    MediaStore.Video.Media.DISPLAY_NAME,
+                    MediaStore.Video.Media.RELATIVE_PATH};
+            try (Cursor cursor = context.getContentResolver().query(collection, projection,
+                    null, null, null)) {
+                if (cursor == null) continue;
+                int idIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID);
+                int nameIndex = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME);
+                int pathIndex = cursor.getColumnIndex(MediaStore.Video.Media.RELATIVE_PATH);
+                while (cursor.moveToNext() && output.size() < MAX_VIDEOS) {
+                    String fileName = cursor.getString(nameIndex);
+                    String relativePath = pathIndex >= 0 ? cursor.getString(pathIndex) : "";
+                    if (!isVideo(fileName, null)) continue;
+                    // Prefer AerialVideos. If absent, allow root-level videos as well.
+                    if (relativePath != null && !relativePath.isEmpty() &&
+                            !relativePath.equalsIgnoreCase("AerialVideos/") &&
+                            !relativePath.toLowerCase(Locale.ROOT).startsWith("aerialvideos/")) continue;
+                    output.add(ContentUris.withAppendedId(collection, cursor.getLong(idIndex)));
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "USB media library unavailable for volume " + name, e);
+            }
+        }
+        return new ArrayList<>(output);
     }
 
     private static void scanFiles(File directory, LinkedHashSet<Uri> found, int depth) {
