@@ -71,6 +71,31 @@ final class VideoLibrary {
         if (manager == null) return new ArrayList<>();
         for (StorageVolume volume : manager.getStorageVolumes()) {
             if (!volume.isRemovable() || !Environment.MEDIA_MOUNTED.equals(volume.getState())) continue;
+            // Android 12 can allow direct read-only access to media files even when
+            // the system media index has not discovered the attached USB drive.
+            if (Build.VERSION.SDK_INT >= 30) {
+                try {
+                    File root = volume.getDirectory();
+                    if (root != null) {
+                        File folder = new File(root, "AerialVideos");
+                        if (folder.isDirectory()) scanFiles(folder, output, 0);
+                        // Files in the root are supported too, but never traverse
+                        // unrelated private directories on the USB drive.
+                        File[] rootFiles = root.listFiles();
+                        if (rootFiles != null) {
+                            for (File file : rootFiles) {
+                                if (output.size() >= MAX_VIDEOS) break;
+                                if (file.isFile() && isVideo(file.getName(), null)) {
+                                    output.add(Uri.fromFile(file));
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "Direct USB media scan unavailable", e);
+                }
+            }
+            if (!output.isEmpty()) continue;
             String name = volume.getMediaStoreVolumeName();
             if (name == null || name.isEmpty()) continue;
             Uri collection = MediaStore.Video.Media.getContentUri(name);
